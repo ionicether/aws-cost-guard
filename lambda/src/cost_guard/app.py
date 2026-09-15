@@ -24,5 +24,5 @@ def handler(event, context):
     subject = f"cost-guard {verb} {len(lines)} service(s)"
     report = "\n".join(lines) or "No tagged services matched."
     log.info("%s\n%s", subject, report)
-    boto3.client("sns").publish(TopicArn=os.environ["REPORT_TOPIC_ARN"], Subject=subject, Message=report)
+    boto3.client("sns").publish(TopicArn=os.environ["REPORT_TOPIC_ARN"], Subject=subject[:100], Message=report)
     return {"subject": subject, "lines": lines}

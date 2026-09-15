@@ -15,15 +15,12 @@ def find(tag_key, tag_value):
                 described = ecs.describe_services(cluster=cluster, services=arns[i : i + 10], include=["TAGS"])
                 for service in described["services"]:
                     tags = {t["key"]: t["value"] for t in service.get("tags", [])}
-                    if tags.get(tag_key) == tag_value and service["desiredCount"] > 0:
+                    if service["status"] != "ACTIVE" or service["desiredCount"] == 0:
+                        continue
+                    if tags.get(tag_key) == tag_value:
                         yield service["serviceArn"], {"cluster": cluster, "desired_count": service["desiredCount"]}
 
 
 def pause(service_arn, snapshot):
     boto3.client("ecs").update_service(cluster=snapshot["cluster"], service=service_arn, desiredCount=0)
 
-
-def resume(service_arn, snapshot):
-    boto3.client("ecs").update_service(
-        cluster=snapshot["cluster"], service=service_arn, desiredCount=snapshot["desired_count"]
-    )
