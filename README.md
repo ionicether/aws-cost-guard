@@ -8,9 +8,9 @@ Stopping spend when a budget blows is easy. Stopping it in a way you're willing 
 
 ## Doesn't AWS Budgets already do this?
 
-What follows is what I'm building toward, not what works today. See Limitations for where it actually is.
+>What follows is what I'm building toward, not what works today. See Limitations for where it actually is.
 
-Partly. Budgets has actions built in: it can attach an IAM policy or an SCP, or stop EC2 and RDS instances, and those actions can be reversed afterward.
+Partially, yes. Budgets has actions built in: it can attach an IAM policy or an SCP, or stop EC2 and RDS instances, and those actions can be reversed afterward.
 
 The catch is you list the exact instance IDs when you set the action up, so anything created later isn't covered until you go back and add it. And it only reaches EC2 and RDS, which leaves out ECS services, Auto Scaling groups, and Lambda.
 
