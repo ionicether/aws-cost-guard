@@ -21,6 +21,11 @@ data "aws_iam_policy_document" "lambda" {
   }
 
   statement {
+    actions   = ["dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Scan"]
+    resources = [aws_dynamodb_table.state.arn]
+  }
+
+  statement {
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.reports.arn]
   }

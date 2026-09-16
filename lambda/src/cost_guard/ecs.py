@@ -24,3 +24,8 @@ def find(tag_key, tag_value):
 def pause(service_arn, snapshot):
     boto3.client("ecs").update_service(cluster=snapshot["cluster"], service=service_arn, desiredCount=0)
 
+
+def resume(service_arn, snapshot):
+    boto3.client("ecs").update_service(
+        cluster=snapshot["cluster"], service=service_arn, desiredCount=snapshot["desired_count"]
+    )

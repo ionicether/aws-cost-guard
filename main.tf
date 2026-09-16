@@ -64,6 +64,17 @@ resource "aws_sns_topic_subscription" "email" {
   endpoint  = each.value
 }
 
+resource "aws_dynamodb_table" "state" {
+  name         = "${var.name}-state"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "service_arn"
+
+  attribute {
+    name = "service_arn"
+    type = "S"
+  }
+}
+
 data "archive_file" "lambda" {
   type        = "zip"
   source_dir  = "${path.module}/lambda/src"
@@ -90,6 +101,7 @@ resource "aws_lambda_function" "this" {
       MODE             = var.mode
       TAG_KEY          = var.opt_in_tag.key
       TAG_VALUE        = var.opt_in_tag.value
+      STATE_TABLE      = aws_dynamodb_table.state.name
       REPORT_TOPIC_ARN = aws_sns_topic.reports.arn
     }
   }
@@ -101,6 +113,9 @@ resource "aws_sns_topic_subscription" "lambda" {
   topic_arn = aws_sns_topic.trigger.arn
   protocol  = "lambda"
   endpoint  = aws_lambda_function.this.arn
+
+  # Without this the subscription can land before the function will accept it
+  depends_on = [aws_lambda_permission.trigger]
 }
 
 resource "aws_lambda_permission" "trigger" {

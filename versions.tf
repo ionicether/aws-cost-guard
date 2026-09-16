@@ -5,7 +5,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 6.0"
+      version = ">= 6.20" # python3.14 runtime
     }
     archive = {
       source  = "hashicorp/archive"

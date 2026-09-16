@@ -1,20 +1,18 @@
 # terraform-aws-cost-guard
 
-Pauses opted-in ECS services when monthly AWS spend crosses a budget.
+Pauses opted-in ECS services when monthly AWS spend crosses a budget, and puts them back the way they were.
 
-A budget alert publishes to SNS, which invokes a Lambda. The function looks for ECS services carrying an opt-in tag and sets their desired count to zero, then reports what it did to a second SNS topic. Reports go to their own topic so the function's own messages can't re-trigger it.
+A budget alert publishes to SNS, which invokes a Lambda. The function looks for ECS services carrying an opt-in tag, writes down what each one is currently running, and sets the desired count to zero. Reports go to their own topic so the function's own messages can't re-trigger it.
 
 Stopping spend when a budget blows is easy. Stopping it in a way you're willing to leave switched on is the harder part, so this only does things that can be undone, and only to resources carrying a tag you put there on purpose. It starts in dry-run mode and changes nothing until you set `mode = "enforce"`.
 
 ## Doesn't AWS Budgets already do this?
 
->What follows is what I'm building toward, not what works today. See Limitations for where it actually is.
-
-Partially, yes. Budgets has actions built in: it can attach an IAM policy or an SCP, or stop EC2 and RDS instances, and those actions can be reversed afterward.
+Partly. Budgets has actions built in: it can attach an IAM policy or an SCP, or stop EC2 and RDS instances, and those actions can be reversed afterward.
 
 The catch is you list the exact instance IDs when you set the action up, so anything created later isn't covered until you go back and add it. And it only reaches EC2 and RDS, which leaves out ECS services, Auto Scaling groups, and Lambda.
 
-This module finds resources by tag at the moment it runs, so a new service is covered as soon as someone tags it. And when it restores, it puts back the actual settings, so a service that was running three tasks comes back with three rather than just being switched on.
+This module finds resources by tag at the moment it runs, so a new service is covered as soon as someone tags it. And when it restores, it puts back the actual settings, so a service that was running three tasks comes back with three rather than just being switched on. ECS is the only one of those three built so far.
 
 ## Usage
 
@@ -37,9 +35,23 @@ Then dry run it rather than waiting on a budget alert to find out whether any of
 $(terraform output -raw dry_run_command)
 ```
 
-You want one line per tagged service with its current count. If it finds nothing, the tag is the first suspect and the region is the second. Once that looks right, set `mode = "enforce"` and apply. See `examples/basic`.
+You want one line per tagged service with its current count. If it finds nothing, the tag is the first suspect and the region is the second. Once that looks right, set `mode = "enforce"` and apply. To bring everything back:
+
+```sh
+$(terraform output -raw restore_command)
+```
+
+See `examples/basic`.
 
 The opt-in tag is the whole safety model. Discovery runs against every cluster in the region and the tag decides what's a candidate, so there's no exemption list to maintain and anything untagged is left alone by default. It also means the dry run tells you your blast radius exactly: the services it names are the services at risk, and the list is never longer than that.
+
+## How restore works
+
+Before pausing a service, the function writes its current desired count to DynamoDB. The write only goes through if there's no record already, which matters more than it sounds like it should: if someone scales a service back up by hand and the budget fires again, a second snapshot would record whatever it happened to be at that moment rather than what it was originally. Keeping the first one means restore always has the real number.
+
+If the pause call then fails, the record is deleted again. A record for something that was never paused is worse than no record at all, because restore would act on it later.
+
+Restore scans the table, resets each service, and deletes the record as it goes. Anything that fails keeps its record, so running it again picks up where it left off.
 
 ## Inputs
 
@@ -52,15 +64,27 @@ The opt-in tag is the whole safety model. Discovery runs against every cluster i
 | `notification_emails` | `[]` | Emails subscribed to reports |
 | `name` | `"cost-guard"` | Prefix for everything the module creates |
 
+## Development
+
+```sh
+cd lambda
+pip install -r requirements-dev.txt
+pytest
+```
+
+The tests run against [moto](https://github.com/getmoto/moto), so they need no AWS account and no credentials. They cover the pause and restore round trip, the double-pause case, a pause that fails partway, and the dry run changing nothing.
+
+What moto won't tell you is whether the IAM policy is sufficient, since it doesn't enforce permissions by default. That one only shows up in a real account.
+
 ## Limitations
 
-There's no restore yet. The report carries each service's previous desired count, so putting things back is one `update-service` call away, but you make it yourself. Automatic restore is next, and after that Auto Scaling groups, RDS, and Lambda.
-
-Only ECS services in the region the module is deployed to. Anything elsewhere is invisible to it.
+Only ECS services, and only in the region the module is deployed to. Auto Scaling groups, RDS, and Lambda are next. Anything in another region is invisible to it.
 
 AWS refreshes budget data up to three times a day, usually 8 to 12 hours apart, so something can burn through half a day of money before the alert fires. Treat this as a backstop, not a circuit breaker.
 
-A pause doesn't always hold either. A scaling policy can push a service back up, and so can the next apply in whatever project owns it, unless the desired count sits in `ignore_changes`.
+A pause doesn't always hold either. A scaling policy can push a service back up, and so can the next apply in whatever project owns it, unless the desired count sits in `ignore_changes`. Restore handles the first case badly: it will set the count back to the original number regardless of what the service is doing now.
+
+Restore is all or nothing. There's no way to bring back one service and leave the rest paused short of deleting rows from the table by hand.
 
 ## License
 
