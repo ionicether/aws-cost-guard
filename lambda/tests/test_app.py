@@ -5,7 +5,7 @@ from cost_guard import app
 
 
 def paused_arns():
-    return {item["service_arn"] for item in boto3.resource("dynamodb").Table("cost-guard-state").scan()["Items"]}
+    return {item["resource_id"] for item in boto3.resource("dynamodb").Table("cost-guard-state").scan()["Items"]}
 
 
 def desired_count(name):
@@ -18,7 +18,7 @@ def test_dry_run_changes_nothing(monkeypatch, service):
 
     out = app.handler({}, None)
 
-    assert out["lines"] == [f"would pause {arn} (currently 2)"]
+    assert out["lines"] == [f"would pause ecs {arn}"]
     assert desired_count("web") == 2
     assert paused_arns() == set()
 
@@ -48,7 +48,7 @@ def test_pause_then_restore(service):
     assert paused_arns() == {arn}
 
     out = app.handler({"action": "restore"}, None)
-    assert out["lines"] == [f"restored {arn}"]
+    assert out["lines"] == [f"restored ecs {arn}"]
     assert desired_count("web") == 3
     assert paused_arns() == set()
 
@@ -77,6 +77,41 @@ def test_failed_pause_leaves_no_state_behind(monkeypatch, service):
 
     out = app.handler({}, None)
 
-    assert out["subject"] == "cost-guard paused 0 service(s)"
-    assert out["lines"][0].startswith(f"FAILED to pause {arn}")
+    assert out["subject"] == "cost-guard paused 0 resource(s)"
+    assert out["lines"][0].startswith(f"FAILED to pause ecs {arn}")
     assert paused_arns() == set()
+
+
+def test_pause_then_restore_an_asg(asg_group):
+    group = asg_group("workers")
+    autoscaling = boto3.client("autoscaling")
+
+    app.handler({}, None)
+
+    paused = autoscaling.describe_auto_scaling_groups(AutoScalingGroupNames=["workers"])["AutoScalingGroups"][0]
+    assert (paused["MinSize"], paused["DesiredCapacity"]) == (0, 0)
+    assert paused_arns() == {group["AutoScalingGroupARN"]}
+
+    app.handler({"action": "restore"}, None)
+
+    restored = autoscaling.describe_auto_scaling_groups(AutoScalingGroupNames=["workers"])["AutoScalingGroups"][0]
+    assert (restored["MinSize"], restored["MaxSize"], restored["DesiredCapacity"]) == (1, 4, 2)
+    assert paused_arns() == set()
+
+
+def test_untagged_asg_is_left_alone(asg_group):
+    asg_group("workers", tagged=False)
+
+    app.handler({}, None)
+
+    assert paused_arns() == set()
+
+
+def test_both_kinds_in_one_run(service, asg_group):
+    service("web")
+    asg_group("workers")
+
+    out = app.handler({}, None)
+
+    assert out["subject"] == "cost-guard paused 2 resource(s)"
+    assert {line.split()[1] for line in out["lines"]} == {"ecs", "asg"}

@@ -67,10 +67,10 @@ resource "aws_sns_topic_subscription" "email" {
 resource "aws_dynamodb_table" "state" {
   name         = "${var.name}-state"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "service_arn"
+  hash_key     = "resource_id"
 
   attribute {
-    name = "service_arn"
+    name = "resource_id"
     type = "S"
   }
 }

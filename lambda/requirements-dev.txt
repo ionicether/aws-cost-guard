@@ -1,2 +1,2 @@
-moto[dynamodb,ecs,sns]==5.2.3
+moto[autoscaling,dynamodb,ec2,ecs,sns]==5.2.3
 pytest==9.1.1

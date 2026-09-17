@@ -31,7 +31,14 @@ data "aws_iam_policy_document" "lambda" {
   }
 
   statement {
-    actions   = ["ecs:ListClusters", "ecs:ListServices", "ecs:DescribeServices", "ecs:UpdateService"]
+    actions = [
+      "autoscaling:DescribeAutoScalingGroups",
+      "autoscaling:UpdateAutoScalingGroup",
+      "ecs:DescribeServices",
+      "ecs:ListClusters",
+      "ecs:ListServices",
+      "ecs:UpdateService",
+    ]
     resources = ["*"]
   }
 }

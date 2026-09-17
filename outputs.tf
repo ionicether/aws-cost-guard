@@ -7,7 +7,7 @@ output "dry_run_command" {
 }
 
 output "state_table_name" {
-  description = "Holds the pre-pause desired count of every paused service."
+  description = "Holds the pre-pause settings of everything cost-guard has paused."
   value       = aws_dynamodb_table.state.name
 }
 

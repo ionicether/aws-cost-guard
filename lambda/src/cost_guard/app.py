@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 import boto3
 from botocore.exceptions import ClientError
 
-from cost_guard import ecs
+from cost_guard import asg, ecs
+
+KINDS = {"asg": asg, "ecs": ecs}
 
 log = logging.getLogger()
 log.setLevel(logging.INFO)
@@ -15,14 +17,14 @@ log.setLevel(logging.INFO)
 def handler(event, context):
     if event.get("action") == "restore":
         lines = restore()
-        subject = f"cost-guard restored {count_ok(lines)} service(s)"
+        subject = f"cost-guard restored {count_ok(lines)} resource(s)"
     else:
         enforce = os.environ["MODE"] == "enforce" and not event.get("dry_run")
         lines = pause(enforce)
         verb = "paused" if enforce else "would pause"
-        subject = f"cost-guard {verb} {count_ok(lines)} service(s)"
+        subject = f"cost-guard {verb} {count_ok(lines)} resource(s)"
 
-    report = "\n".join(lines) or "No tagged services matched."
+    report = "\n".join(lines) or "No tagged resources matched."
     log.info("%s\n%s", subject, report)
     boto3.client("sns").publish(TopicArn=os.environ["REPORT_TOPIC_ARN"], Subject=subject[:100], Message=report)
     return {"subject": subject, "lines": lines}
@@ -31,38 +33,46 @@ def handler(event, context):
 def pause(enforce):
     table = state_table()
     lines = []
-    for service_arn, snapshot in ecs.find(os.environ["TAG_KEY"], os.environ["TAG_VALUE"]):
-        if not enforce:
-            lines.append(f"would pause {service_arn} (currently {snapshot['desired_count']})")
+    for kind, module in KINDS.items():
+        try:
+            targets = list(module.find(os.environ["TAG_KEY"], os.environ["TAG_VALUE"]))
+        except ClientError as err:
+            lines.append(f"FAILED to scan {kind}: {err}")
             continue
 
-        created = remember(table, service_arn, snapshot)
-        try:
-            ecs.pause(service_arn, snapshot)
-        except ClientError as err:
-            if created:
-                table.delete_item(Key={"service_arn": service_arn})
-            lines.append(f"FAILED to pause {service_arn}: {err}")
-            continue
-        lines.append(f"paused {service_arn} (was {snapshot['desired_count']})")
+        for resource_id, snapshot in targets:
+            if not enforce:
+                lines.append(f"would pause {kind} {resource_id}")
+                continue
+
+            created = remember(table, kind, resource_id, snapshot)
+            try:
+                module.pause(resource_id, snapshot)
+            except ClientError as err:
+                if created:
+                    table.delete_item(Key={"resource_id": resource_id})
+                lines.append(f"FAILED to pause {kind} {resource_id}: {err}")
+                continue
+            lines.append(f"paused {kind} {resource_id}")
     return lines
 
 
-def remember(table, service_arn, snapshot):
+def remember(table, kind, resource_id, snapshot):
     try:
         table.put_item(
             Item={
-                "service_arn": service_arn,
+                "resource_id": resource_id,
+                "kind": kind,
                 "snapshot": json.dumps(snapshot),
                 "paused_at": datetime.now(timezone.utc).isoformat(),
             },
-            ConditionExpression="attribute_not_exists(service_arn)",
+            ConditionExpression="attribute_not_exists(resource_id)",
         )
     except ClientError as err:
         if err.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
         # Someone scaled it back up after an earlier pause. The first snapshot
-        # holds the real original count, so keep it.
+        # holds the real original settings, so keep it.
         return False
     return True
 
@@ -71,14 +81,14 @@ def restore():
     table = state_table()
     lines = []
     for item in scan(table):
-        service_arn = item["service_arn"]
+        kind, resource_id = item["kind"], item["resource_id"]
         try:
-            ecs.resume(service_arn, json.loads(item["snapshot"]))
+            KINDS[kind].resume(resource_id, json.loads(item["snapshot"]))
         except ClientError as err:
-            lines.append(f"FAILED to restore {service_arn}: {err}")
+            lines.append(f"FAILED to restore {kind} {resource_id}: {err}")
             continue
-        table.delete_item(Key={"service_arn": service_arn})
-        lines.append(f"restored {service_arn}")
+        table.delete_item(Key={"resource_id": resource_id})
+        lines.append(f"restored {kind} {resource_id}")
     return lines
 
 
