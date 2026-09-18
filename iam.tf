@@ -15,6 +15,8 @@ resource "aws_iam_role" "lambda" {
 }
 
 data "aws_iam_policy_document" "lambda" {
+  #checkov:skip=CKV_AWS_111:Targets are discovered at runtime and the opt-in tag is checked in code before any write
+  #checkov:skip=CKV_AWS_356:Same reason as CKV_AWS_111
   statement {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
     resources = ["${aws_cloudwatch_log_group.lambda.arn}:*"]
