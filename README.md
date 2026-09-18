@@ -72,9 +72,20 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests run against [moto](https://github.com/getmoto/moto), so they need no AWS account and no credentials. They cover the pause and restore round trip, the double-pause case, a pause that fails partway, and the dry run changing nothing.
+The tests run against [moto](https://github.com/getmoto/moto), so they need no AWS account and no credentials. They cover the pause and restore round trip for both resource types, the double-pause case, a pause that fails partway, and the dry run changing nothing.
 
-What moto won't tell you is whether the IAM policy is sufficient, since it doesn't enforce permissions by default. That one only shows up in a real account.
+The Terraform side has its own tests using a mocked provider, which is why they run without credentials too:
+
+```sh
+terraform init -backend=false
+terraform test
+```
+
+Those check the things a misconfigured module would get wrong quietly: that a fresh install is in dry-run mode, that the opt-in tag reaches the function, and that the budget fires on actual spend rather than a forecast.
+
+CI runs both suites, plus `tflint` and Checkov. Every Checkov skip in the code carries its reason inline, so you can decide whether you agree with it rather than wondering what was ignored.
+
+What none of this tells you is whether the IAM policy is sufficient, since moto doesn't enforce permissions by default. That one only shows up in a real account.
 
 ## Limitations
 
@@ -85,6 +96,8 @@ AWS refreshes budget data up to three times a day, usually 8 to 12 hours apart, 
 A pause doesn't always hold either. A scaling policy can push things back up, and so can the next apply in whatever project owns them, unless the capacity sits in `ignore_changes`. Restore handles that badly: it sets everything back to the recorded numbers regardless of what the resource is doing now.
 
 Upgrading from a version before Auto Scaling group support replaces the state table, because the key changed from a service ARN to a generic resource ID. Restore anything you have paused before you upgrade, or the records go with it.
+
+If the function crashes outright, the failed event goes to the reports topic rather than vanishing. That tells you something broke, not what, so the logs are still where you find out.
 
 Restore is all or nothing. There's no way to bring back one service and leave the rest paused short of deleting rows from the table by hand.
 
