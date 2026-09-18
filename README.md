@@ -1,6 +1,8 @@
 # terraform-aws-cost-guard
 
-Pauses tagged ECS services and ASGs when your monthly AWS spend crosses a budget, then puts them back exactly as they were. (Admittedly niche. It's for accounts with workloads you'd rather have off than spendy)
+Pauses tagged ECS services and ASGs when your monthly AWS spend crosses a budget, then puts them back exactly as they were. 
+
+>Admittedly niche. It's for accounts with workloads you'd rather have off than spendy.
 
 Budget alert -> SNS -> Lambda. The function finds anything carrying the opt-in tag, records what it's running, and scales it to zero. Reports go to a second topic (not the one that triggers it, or it retriggers itself).
 
