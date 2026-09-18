@@ -1,18 +1,20 @@
 # terraform-aws-cost-guard
 
-Pauses opted-in ECS services and Auto Scaling groups when monthly AWS spend crosses a budget, and puts them back the way they were.
+Pauses tagged ECS services and ASGs when your monthly AWS spend crosses a budget, then puts them back exactly as they were.
 
-A budget alert publishes to SNS, which invokes a Lambda. The function looks for ECS services and Auto Scaling groups carrying an opt-in tag, writes down what each one is currently running, and scales it to zero. Reports go to their own topic so the function's own messages can't re-trigger it.
+Budget alert -> SNS -> Lambda. The function finds anything carrying the opt-in tag, records what it's running, and scales it to zero. Reports go to a second topic (not the one that triggers it, or it retriggers itself).
 
-Stopping spend when a budget blows is easy. Stopping it in a way you're willing to leave switched on is the harder part, so this only does things that can be undone, and only to resources carrying a tag you put there on purpose. It starts in dry-run mode and changes nothing until you set `mode = "enforce"`.
+Killing spend when a budget blows is easy. Killing it in a way you'll leave switched on isn't. So nothing here deletes anything, and nothing gets touched unless you tagged it. Ships in dry-run mode.
 
 ## Doesn't AWS Budgets already do this?
 
-Partly. Budgets has actions built in: it can attach an IAM policy or an SCP, or stop EC2 and RDS instances, and those actions can be reversed afterward.
+Partially, yes. Budgets has actions built in. It can attach an IAM policy or an SCP, or stop EC2 and RDS instances, and you can reverse any of that afterward.
 
-The catch is you list the exact instance IDs when you set the action up, so anything created later isn't covered until you go back and add it. And it only reaches EC2 and RDS, which leaves out ECS services, Auto Scaling groups, and Lambda.
+The catch: you list the exact instance IDs up front. Anything created next week isn't covered until someone goes back and adds it. And it only reaches EC2 and RDS -> no ECS, no ASGs, no Lambda.
 
-This module finds resources by tag at the moment it runs, so a new service is covered as soon as someone tags it. And when it restores, it puts back the actual settings, so a service that was running three tasks comes back with three rather than just being switched on. RDS and Lambda aren't built yet.
+This finds things by tag at the moment it runs, so a new service is covered as soon as it's tagged. Restore puts back the real settings too (a service running 3 tasks comes back running 3, not just "on").
+
+RDS and Lambda handlers aren't written yet.
 
 ## Usage
 
@@ -25,33 +27,44 @@ module "cost_guard" {
 }
 ```
 
-Apply it, then confirm the subscription email SNS sends you. Nothing else arrives until you click it, and the module has no way to tell you that.
+Apply, then confirm the SNS subscription email. Nothing arrives until you do, and the module can't tell you that.
 
-Tag something you're willing to have paused with `CostGuard = enabled`. For an ECS service, check the tag actually comes back from `describe-services --include TAGS`. An empty list means the account is still on short ECS ARNs, which don't carry tags at all. Services keep whatever format they were created with, so turning the setting on doesn't fix the ones you already have.
+Tag something with `CostGuard = enabled`, then check the tag comes back:
 
-Then dry run it rather than waiting on a budget alert to find out whether any of this works:
+```sh
+aws ecs describe-services --cluster mycluster --services myservice \
+  --include TAGS --query 'services[0].tags'
+```
+
+Empty list -> the account is still on short ECS ARNs. Those don't carry tags at all. Services keep whichever format they were created with, so flipping the account setting won't fix existing ones. Recreate them.
+
+Dry run before you trust it:
 
 ```sh
 $(terraform output -raw dry_run_command)
 ```
 
-You want one line per tagged resource. If it finds nothing, the tag is the first suspect and the region is the second. Once that looks right, set `mode = "enforce"` and apply. To bring everything back:
+One line per tagged resource. Nothing at all is usually the tag, then the region. When it looks right, set `mode = "enforce"` and apply.
+
+Restore:
 
 ```sh
 $(terraform output -raw restore_command)
 ```
 
-See `examples/basic`.
+Full example in `examples/basic`.
 
-The opt-in tag is the whole safety model. Discovery runs against every cluster and Auto Scaling group in the region and the tag decides what's a candidate, so there's no exemption list to maintain and anything untagged is left alone by default. It also means the dry run tells you your blast radius exactly: the services it names are the services at risk, and the list is never longer than that.
+The tag is the whole safety model. Discovery sweeps every cluster and ASG in the region, and the tag is the only thing that makes a resource a candidate. No exemption list, nothing to keep in sync, untagged is ignored. It also means the dry run is your blast radius: what it lists is what's at risk, and the list doesn't grow on its own.
 
 ## How restore works
 
-Before pausing anything, the function writes its current settings to DynamoDB. For an ECS service that's the desired count; for an Auto Scaling group it's the min, max, and desired capacity, since dropping the desired count alone just makes the group launch replacements. The write only goes through if there's no record already, which matters more than it sounds like it should: if someone scales a service back up by hand and the budget fires again, a second snapshot would record whatever it happened to be at that moment rather than what it was originally. Keeping the first one means restore always has the real number.
+Settings get written to DynamoDB before anything is paused. ECS is just the desired count. ASGs need min, max, and desired, because dropping desired alone does nothing (the group launches replacements to get back to min).
 
-If the pause call then fails, the record is deleted again. A record for something that was never paused is worse than no record at all, because restore would act on it later.
+The write is conditional on no record existing. That matters more than it sounds like it should: someone scales a service back up by hand, the budget fires again a day later, and a fresh snapshot would record whatever it happened to be at that moment. Keeping the first one means restore still has the real number.
 
-Restore scans the table, resets each resource using the handler for its kind, and deletes the record as it goes. Anything that fails keeps its record, so running it again picks up where it left off.
+If the pause then fails, the record is deleted. A record for something that was never paused is worse than no record (restore acts on it later).
+
+Restore walks the table, resets each resource through the handler for its kind, and deletes rows as it goes. Failures keep their row, so run it again.
 
 ## Inputs
 
@@ -60,9 +73,31 @@ Restore scans the table, resets each resource using the handler for its kind, an
 | `monthly_budget_usd` | required | Monthly cost budget in USD |
 | `threshold_percent` | `100` | Percent of the budget actual spend must exceed |
 | `mode` | `"dry_run"` | `dry_run` or `enforce` |
-| `opt_in_tag` | `{ key = "CostGuard", value = "enabled" }` | Tag a service needs to be eligible |
+| `opt_in_tag` | `{ key = "CostGuard", value = "enabled" }` | Tag a resource needs to be eligible |
 | `notification_emails` | `[]` | Emails subscribed to reports |
 | `name` | `"cost-guard"` | Prefix for everything the module creates |
+
+## When things go wrong
+
+Settings can't be written -> the resource is left running and the report states it. Pausing something that can't be restored is worse than the spend.
+
+A run that dies halfway leaves consistent state. Everything is recorded before it's touched, anything already paused is skipped next time, so invoking again carries on from where it stopped. You lose that run's report.
+
+If the function crashes outright, the failed event lands on the reports topic instead of vanishing. That tells you something broke, not what. Logs for that.
+
+Reports over the 256 KB SNS limit get truncated, with a pointer to the logs.
+
+## Limitations
+
+ECS and ASGs only, in one region (the one you deployed to). RDS and Lambda are next.
+
+Budget data refreshes up to 3x a day, usually 8 to 12 hours apart. Something can burn half a day of money before the alert fires. Backstop, not a circuit breaker.
+
+A pause doesn't always hold. Scaling policies push things back up, and so does the next apply in whatever project owns them, unless the capacity is in `ignore_changes`. Restore handles that badly: it resets to the recorded numbers regardless of what the resource is doing now.
+
+Restore is all or nothing. One service back and the rest paused means deleting rows by hand.
+
+Upgrading from before ASG support replaces the state table (the key changed from a service ARN to a generic resource ID). Restore anything paused first or the records go with it.
 
 ## Development
 
@@ -72,34 +107,20 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests run against [moto](https://github.com/getmoto/moto), so they need no AWS account and no credentials. They cover the pause and restore round trip for both resource types, the double-pause case, a pause that fails partway, and the dry run changing nothing.
+Runs against [moto](https://github.com/getmoto/moto), so no AWS account and no credentials. Covers a pause/restore round trip for both resource types, the double-pause case, a pause that fails partway, a write that can't be recorded, and the dry run leaving everything alone.
 
-The Terraform side has its own tests using a mocked provider, which is why they run without credentials too:
+Terraform has its own tests against a mocked provider:
 
 ```sh
 terraform init -backend=false
 terraform test
 ```
 
-Those check the things a misconfigured module would get wrong quietly: that a fresh install is in dry-run mode, that the opt-in tag reaches the function, and that the budget fires on actual spend rather than a forecast.
+Those catch what a misconfigured module gets wrong quietly: fresh install in dry-run mode, the opt-in tag reaching the function, the budget firing on actual spend and not a forecast.
 
-CI runs both suites, plus `tflint` and Checkov. Every Checkov skip in the code carries its reason inline, so you can decide whether you agree with it rather than wondering what was ignored.
+CI runs both suites plus tflint and Checkov. Every Checkov skip carries its reason inline, so you can disagree with it rather than wonder what got ignored.
 
-What none of this tells you is whether the IAM policy is sufficient, since moto doesn't enforce permissions by default. That one only shows up in a real account.
-
-## Limitations
-
-Only ECS services and Auto Scaling groups, and only in the region the module is deployed to. RDS and Lambda are next. Anything in another region is invisible to it.
-
-AWS refreshes budget data up to three times a day, usually 8 to 12 hours apart, so something can burn through half a day of money before the alert fires. Treat this as a backstop, not a circuit breaker.
-
-A pause doesn't always hold either. A scaling policy can push things back up, and so can the next apply in whatever project owns them, unless the capacity sits in `ignore_changes`. Restore handles that badly: it sets everything back to the recorded numbers regardless of what the resource is doing now.
-
-Upgrading from a version before Auto Scaling group support replaces the state table, because the key changed from a service ARN to a generic resource ID. Restore anything you have paused before you upgrade, or the records go with it.
-
-If the function crashes outright, the failed event goes to the reports topic rather than vanishing. That tells you something broke, not what, so the logs are still where you find out.
-
-Restore is all or nothing. There's no way to bring back one service and leave the rest paused short of deleting rows from the table by hand.
+None of it tells you whether the IAM policy is sufficient. Moto doesn't enforce permissions, so that only shows up in a real account.
 
 ## License
 
