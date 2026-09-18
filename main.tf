@@ -108,7 +108,7 @@ resource "aws_lambda_function" "this" {
   handler          = "cost_guard.app.handler"
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
-  timeout          = 300
+  timeout          = 900
 
   # SNS invokes asynchronously, so without this a crash goes unreported
   dead_letter_config {

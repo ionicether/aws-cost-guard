@@ -10,6 +10,9 @@ from cost_guard import asg, ecs
 
 KINDS = {"asg": asg, "ecs": ecs}
 
+# SNS rejects anything over 256 KB, and a big enough account will get there
+MAX_MESSAGE_BYTES = 256 * 1024
+
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
@@ -24,10 +27,22 @@ def handler(event, context):
         verb = "paused" if enforce else "would pause"
         subject = f"cost-guard {verb} {count_ok(lines)} resource(s)"
 
-    report = "\n".join(lines) or "No tagged resources matched."
-    log.info("%s\n%s", subject, report)
-    boto3.client("sns").publish(TopicArn=os.environ["REPORT_TOPIC_ARN"], Subject=subject[:100], Message=report)
+    report = body(lines)
+    log.info("%s\n%s", subject, "\n".join(lines))
+    boto3.client("sns").publish(
+        TopicArn=os.environ["REPORT_TOPIC_ARN"], Subject=subject[:100], Message=report
+    )
     return {"subject": subject, "lines": lines}
+
+
+def body(lines):
+    report = "\n".join(lines) or "No tagged resources matched."
+    if len(report.encode()) <= MAX_MESSAGE_BYTES:
+        return report
+
+    note = "\n[truncated, see the function's CloudWatch logs for the rest]"
+    room = MAX_MESSAGE_BYTES - len(note.encode())
+    return report.encode()[:room].decode(errors="ignore") + note
 
 
 def pause(enforce):
@@ -45,7 +60,14 @@ def pause(enforce):
                 lines.append(f"would pause {kind} {resource_id}")
                 continue
 
-            created = remember(table, kind, resource_id, snapshot)
+            try:
+                created = remember(table, kind, resource_id, snapshot)
+            except ClientError as err:
+                lines.append(
+                    f"FAILED to record {kind} {resource_id}, leaving it alone: {err}"
+                )
+                continue
+
             try:
                 module.pause(resource_id, snapshot)
             except ClientError as err:
