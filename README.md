@@ -1,6 +1,6 @@
 # terraform-aws-cost-guard
 
-Pauses tagged ECS services and ASGs when your monthly AWS spend crosses a budget, then puts them back exactly as they were.
+Pauses tagged ECS services and ASGs when your monthly AWS spend crosses a budget, then puts them back exactly as they were. (Admittedly niche. It's for accounts with workloads you'd rather have off than spendy)
 
 Budget alert -> SNS -> Lambda. The function finds anything carrying the opt-in tag, records what it's running, and scales it to zero. Reports go to a second topic (not the one that triggers it, or it retriggers itself).
 
@@ -10,7 +10,7 @@ Killing spend when a budget blows is easy. Killing it in a way you'll leave swit
 
 Partially, yes. Budgets has actions built in. It can attach an IAM policy or an SCP, or stop EC2 and RDS instances, and you can reverse any of that afterward.
 
-The catch: you list the exact instance IDs up front. Anything created next week isn't covered until someone goes back and adds it. And it only reaches EC2 and RDS -> no ECS, no ASGs, no Lambda.
+The catch: the policy actions block new spend but leave everything already running untouched, and the stop action only reaches instances you listed by ID up front (100 of them, max). Nothing in there pauses a workload it wasn't told about in advance. It's also EC2 and RDS only -> no ECS, no ASGs, no Lambda.
 
 This finds things by tag at the moment it runs, so a new service is covered as soon as it's tagged. Restore puts back the real settings too (a service running 3 tasks comes back running 3, not just "on").
 
