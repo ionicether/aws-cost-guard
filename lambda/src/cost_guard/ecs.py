@@ -1,4 +1,8 @@
+import logging
+
 import boto3
+
+log = logging.getLogger(__name__)
 
 
 def find(tag_key, tag_value):
@@ -13,6 +17,8 @@ def find(tag_key, tag_value):
             # describe_services accepts at most 10 services per call
             for i in range(0, len(arns), 10):
                 described = ecs.describe_services(cluster=cluster, services=arns[i : i + 10], include=["TAGS"])
+                for failure in described["failures"]:
+                    log.warning("skipping %s: %s", failure.get("arn"), failure.get("reason"))
                 for service in described["services"]:
                     tags = {t["key"]: t["value"] for t in service.get("tags", [])}
                     if service["status"] != "ACTIVE" or service["desiredCount"] == 0:
