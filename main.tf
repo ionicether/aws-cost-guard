@@ -2,6 +2,7 @@ data "aws_caller_identity" "current" {}
 
 # Separate from the reports topic so the function's own messages can't re-trigger it
 resource "aws_sns_topic" "trigger" {
+  #checkov:skip=CKV_AWS_26:Budgets can only publish to topics encrypted with a customer managed key, which costs money in a tool meant to save it
   name = "${var.name}-trigger"
 }
 
@@ -53,6 +54,7 @@ resource "aws_budgets_budget" "this" {
 }
 
 resource "aws_sns_topic" "reports" {
+  #checkov:skip=CKV_AWS_26:Reports name resource ARNs and nothing sensitive
   name = "${var.name}-reports"
 }
 
@@ -65,6 +67,7 @@ resource "aws_sns_topic_subscription" "email" {
 }
 
 resource "aws_dynamodb_table" "state" {
+  #checkov:skip=CKV_AWS_119:Encrypted at rest by default with an AWS owned key
   name         = "${var.name}-state"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "resource_id"
@@ -72,6 +75,10 @@ resource "aws_dynamodb_table" "state" {
   attribute {
     name = "resource_id"
     type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 }
 
@@ -83,11 +90,18 @@ data "archive_file" "lambda" {
 }
 
 resource "aws_cloudwatch_log_group" "lambda" {
+  #checkov:skip=CKV_AWS_158:Log groups are encrypted by default
+  #checkov:skip=CKV_AWS_338:A year of logs for a function that runs monthly is not worth paying for
   name              = "/aws/lambda/${var.name}"
   retention_in_days = 30
 }
 
 resource "aws_lambda_function" "this" {
+  #checkov:skip=CKV_AWS_50:Tracing adds cost and little insight for a function that runs a few times a month
+  #checkov:skip=CKV_AWS_115:Reserving concurrency fails on accounts at or near the unreserved minimum, including many new ones
+  #checkov:skip=CKV_AWS_117:Only calls AWS APIs, and a VPC would need NAT or endpoints that cost money
+  #checkov:skip=CKV_AWS_173:Environment variables hold no secrets
+  #checkov:skip=CKV_AWS_272:Code is built from this repository by Terraform
   function_name    = var.name
   role             = aws_iam_role.lambda.arn
   runtime          = "python3.14"
@@ -95,6 +109,11 @@ resource "aws_lambda_function" "this" {
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
   timeout          = 300
+
+  # SNS invokes asynchronously, so without this a crash goes unreported
+  dead_letter_config {
+    target_arn = aws_sns_topic.reports.arn
+  }
 
   environment {
     variables = {
